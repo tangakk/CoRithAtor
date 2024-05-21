@@ -1,1 +1,2 @@
 # CoRithAtor
+## (COncurrency aRITHmetic calculATOR)
