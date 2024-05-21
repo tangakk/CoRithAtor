@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/dustinxie/lockfree"
@@ -50,12 +51,15 @@ func (o *Orchestrator) Run() {
 	}
 	port_str := fmt.Sprint(o.Config.Port)
 	r.Use(middleware.Logger)
+	r.Use(middleware.URLFormat)
 
 	go o.expressionProcessing()
 
 	//все методы для API
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/calculate", o.addExpression)
+		r.Get("/expressions", o.getExpressions)
+		r.Get("/expressions/:{id}", o.getExpression)
 	})
 
 	//внутренние методы
@@ -115,7 +119,6 @@ func (o *Orchestrator) expressionProcessing() {
 
 		cnt := 0 //для айди задач
 		for len(expr_ordered) != 1 {
-			fmt.Println(expr_ordered)
 			//переберём всё
 			for i, v := range expr_ordered {
 				if i == 0 || i == len(expr_ordered)-1 {
@@ -201,6 +204,39 @@ func (o *Orchestrator) addExpression(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt32(&o.counter, 1)
 }
 
+func (o *Orchestrator) getExpressions(w http.ResponseWriter, r *http.Request) {
+	expressions := ExpressionGetResponse{Expressions: make([]ExpressionResp, o.results.Len())}
+	o.results.Lock()
+	cnt := 0
+	for _, v, ok := o.results.Next(); ok; _, v, ok = o.results.Next() {
+		//fmt.Println(o.results.Get(k))
+		v_exp := v.(expression)
+		expressions.Expressions[cnt] = ExpressionResp{v_exp.id, v_exp.status, v_exp.result}
+		cnt++
+	}
+	o.results.Unlock()
+	w.Header().Add("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(expressions)
+}
+
+func (o *Orchestrator) getExpression(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	data, ok := o.results.Get(int32(id))
+	if !ok {
+		http.Error(w, "no expression with such id found: "+chi.URLParam(r, "id"), http.StatusNotFound)
+		return
+	}
+	data_expr := data.(expression)
+
+	res := map[string]ExpressionResp{"expression": {data_expr.id, data_expr.status, data_expr.result}}
+	w.Header().Add("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
 // выдача задач для агента
 func (o *Orchestrator) getTask(w http.ResponseWriter, r *http.Request) {
 	if o.tasks_to_give.Len() == 0 {
@@ -241,6 +277,16 @@ type Task struct {
 	Arg1      float64 `json:"arg1"`
 	Arg2      float64 `json:"arg2"`
 	Operation string  `json:"operation"`
+}
+
+type ExpressionGetResponse struct {
+	Expressions []ExpressionResp `json:"expressions"`
+}
+
+type ExpressionResp struct {
+	Id     int32   `json:"id"`
+	Status string  `json:"status"`
+	Result float64 `json:"result"`
 }
 
 // удалить из слайса
