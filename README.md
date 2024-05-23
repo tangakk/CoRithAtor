@@ -3,7 +3,7 @@
 Распределенный вычислитель арифметических выражений
 
 ## Установка и запуск:
-Установите git и go (>= 1.22.3). Введите в терминал:
+Установите [git](https://git-scm.com/downloads) и [go](https://go.dev/dl/) (>= 1.22.3). Введите в терминал:
 ```bash
 git clone https://github.com/tangakk/CoRithAtor.git
 cd CoRithAtor
