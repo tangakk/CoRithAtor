@@ -1,0 +1,10 @@
+{
+    "OrchestratorURI": "http://localhost:8080",
+    "TaskPath": "/internal/task",
+    "MaxWorkers": 1,
+    "DelayMs": 500,
+    "TimeAdditionMs": 100,
+    "TimeSubstractionMs": 100,
+    "TimeMultiplicationMs": 100,
+    "TimeDivisionMs": 100
+}

@@ -3,10 +3,12 @@ package orchestrator
 import (
 	postfixnotation "corithator/pkg/postfix_notation"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/dustinxie/lockfree"
 	"github.com/go-chi/chi/v5"
@@ -14,7 +16,8 @@ import (
 )
 
 type OrchestratorConfig struct {
-	Port int //если невалидный - меняется в 8080 при старте
+	Port             int //если невалидный - меняется в 8080 при старте
+	TimeLimitSeconds int //по умолчанию - 60 секунд
 }
 
 type Orchestrator struct {
@@ -34,6 +37,12 @@ type expression struct {
 }
 
 func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
+	if config.Port <= 0 {
+		config.Port = 8080
+	}
+	if config.TimeLimitSeconds <= 0 {
+		config.TimeLimitSeconds = 60
+	}
 	return &Orchestrator{
 		Config:          config,
 		expressions:     lockfree.NewQueue(),
@@ -46,9 +55,6 @@ func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 // запускает оркестратор
 func (o *Orchestrator) Run() {
 	r := chi.NewRouter()
-	if o.Config.Port <= 0 {
-		o.Config.Port = 8080
-	}
 	port_str := fmt.Sprint(o.Config.Port)
 	r.Use(middleware.Logger)
 	r.Use(middleware.URLFormat)
@@ -80,6 +86,7 @@ func (o *Orchestrator) Run() {
 // А потом параллелит
 // i don't like it
 func (o *Orchestrator) expressionProcessing() {
+	cnt := 0 //для айди задач
 	for {
 		t := o.expressions.Deque()
 		if t == nil {
@@ -117,60 +124,76 @@ func (o *Orchestrator) expressionProcessing() {
 			expr_ordered[i] = exprElement{pos: i, data: j}
 		}
 
-		cnt := 0 //для айди задач
-		for len(expr_ordered) != 1 {
-			//переберём всё
-			for i, v := range expr_ordered {
-				if i == 0 || i == len(expr_ordered)-1 {
-					continue
-				}
+		var err error
+		select {
+		case <-time.After(time.Second * time.Duration(o.Config.TimeLimitSeconds)):
+			err = errors.New("time limit exceeded")
+		default:
+		BIG_LOOP:
+			for len(expr_ordered) != 1 {
+				//переберём всё
+				for i, v := range expr_ordered {
+					if i == 0 || i == len(expr_ordered)-1 {
+						continue
+					}
 
-				arg1, ok1 := expr_ordered[i-1].data.(float64)
-				arg2, ok2 := v.data.(float64)
-				oper, ok3 := expr_ordered[i+1].data.(string)
-				if ok1 && ok2 && ok3 {
-					//проверим, не считается ли это уже
-					task_already_started := false
-					for _, pos := range tasks {
-						if pos == v.pos {
-							task_already_started = true
-							break
+					arg1, ok1 := expr_ordered[i-1].data.(float64)
+					arg2, ok2 := v.data.(float64)
+					oper, ok3 := expr_ordered[i+1].data.(string)
+
+					if ok1 && ok2 && ok3 {
+						if oper == "/" && arg2 == 0 {
+							err = errors.New("divison by zero")
+							break BIG_LOOP
+						}
+
+						//проверим, не считается ли это уже
+						task_already_started := false
+						for _, pos := range tasks {
+							if pos == v.pos {
+								task_already_started = true
+								break
+							}
+						}
+						//если не считается ещё
+						if !task_already_started {
+							tasks[cnt] = v.pos
+							o.tasks_to_give.Enque(TaskGetResponse{Task: Task{
+								Id:        cnt,
+								Arg1:      arg1,
+								Arg2:      arg2,
+								Operation: oper,
+							}})
+							cnt++
 						}
 					}
-					//если не считается ещё
-					if !task_already_started {
-						tasks[cnt] = v.pos
-						o.tasks_to_give.Enque(TaskGetResponse{Task: Task{
-							Id:        cnt,
-							Arg1:      arg1,
-							Arg2:      arg2,
-							Operation: oper,
-						}})
-						cnt++
-					}
 				}
-			}
-			//перебрали, ура. Проверим, есть ли чё посчитанное агентом
-			t = o.agent_responses.Deque()
-			for t != nil {
-				task_res := t.(TaskPostRequest)
-				pos := tasks[task_res.Id]
-				delete(tasks, task_res.Id)
-				//найдём, где эта позиция сейчас в выражении
-				for i, v := range expr_ordered {
-					if v.pos == pos {
-						//и заменим на результат, остальное удалим
-						expr_ordered[i].data = task_res.Result
-						expr_ordered = remove(expr_ordered, i+1)
-						expr_ordered = remove(expr_ordered, i-1)
-					}
-				}
+				//перебрали, ура. Проверим, есть ли чё посчитанное агентом
 				t = o.agent_responses.Deque()
+				for t != nil {
+					task_res := t.(TaskPostRequest)
+					pos := tasks[task_res.Id]
+					delete(tasks, task_res.Id)
+					//найдём, где эта позиция сейчас в выражении
+					for i, v := range expr_ordered {
+						if v.pos == pos {
+							//и заменим на результат, остальное удалим
+							expr_ordered[i].data = task_res.Result
+							expr_ordered = remove(expr_ordered, i+1)
+							expr_ordered = remove(expr_ordered, i-1)
+						}
+					}
+					t = o.agent_responses.Deque()
+				}
 			}
 		}
 		//запишем ответ
-		changed.result = expr_ordered[0].data.(float64)
-		changed.status = "Ready"
+		if err == nil {
+			changed.result = expr_ordered[0].data.(float64)
+			changed.status = "Ready"
+		} else {
+			changed.status = err.Error()
+		}
 		o.results.Set(changed.id, changed)
 	}
 }

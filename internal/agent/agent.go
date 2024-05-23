@@ -13,9 +13,9 @@ import (
 
 type AgentConfig struct {
 	OrchestratorURI      string //если пустой - меняется в :8080
-	TaskPath             string //по-муолчанию - /internal/task
+	TaskPath             string //по умолчанию - /internal/task
 	MaxWorkers           int    //минимум 1
-	DelaySeconds         int    //задержка между запросами задач
+	DelayMs              int    //задержка между запросами задач
 	TimeAdditionMs       int
 	TimeSubstractionMs   int
 	TimeMultiplicationMs int
@@ -34,8 +34,8 @@ func NewAgent(config AgentConfig) *Agent {
 	if config.TaskPath == "" {
 		config.TaskPath = "/internal/task"
 	}
-	if config.DelaySeconds < 0 {
-		config.DelaySeconds = 0
+	if config.DelayMs < 0 {
+		config.DelayMs = 0
 	}
 	if config.MaxWorkers <= 0 {
 		config.MaxWorkers = 1
@@ -76,21 +76,19 @@ func (a *Agent) Run() {
 			}
 		}()
 	}
-	go func() {
-		for {
-			task, err := a.getTask()
-			if err != nil {
-				if err.Error() != "no tasks available" {
-					slog.Error("Error getting task: ", err)
-				} else {
-					slog.Debug("No new tasks")
-				}
+	for {
+		task, err := a.getTask()
+		if err != nil {
+			if err.Error() != "no tasks available" {
+				slog.Error("Error getting task: ", err)
 			} else {
-				a.tasks <- task
+				slog.Debug("No new tasks")
 			}
-			time.Sleep(time.Second * time.Duration(a.Config.DelaySeconds))
+		} else {
+			a.tasks <- task
 		}
-	}()
+		time.Sleep(time.Millisecond * time.Duration(a.Config.DelayMs))
+	}
 }
 
 func (a *Agent) sendResult(id int, result float64) {
