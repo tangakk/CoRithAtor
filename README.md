@@ -13,7 +13,7 @@ sh start.sh
 ```bash
 git clone https://github.com/tangakk/CoRithAtor.git
 cd CoRithAtor
-start.bat
+.\start.bat
 ```
 После этого можете использовать start.sh или start.bat для запуска.
 
