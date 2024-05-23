@@ -172,7 +172,10 @@ func (o *Orchestrator) expressionProcessing() {
 				t = o.agent_responses.Deque()
 				for t != nil {
 					task_res := t.(TaskPostRequest)
-					pos := tasks[task_res.Id]
+					pos, ok := tasks[task_res.Id]
+					if !ok {
+						continue
+					}
 					delete(tasks, task_res.Id)
 					//найдём, где эта позиция сейчас в выражении
 					for i, v := range expr_ordered {
@@ -245,7 +248,7 @@ func (o *Orchestrator) getExpressions(w http.ResponseWriter, r *http.Request) {
 func (o *Orchestrator) getExpression(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	data, ok := o.results.Get(int32(id))
