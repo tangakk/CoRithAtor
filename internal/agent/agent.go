@@ -56,6 +56,7 @@ func NewAgent(config AgentConfig) *Agent {
 }
 
 func (a *Agent) Run() {
+
 	for range a.Config.MaxWorkers {
 		go func() {
 			for task := range a.tasks {
@@ -80,7 +81,7 @@ func (a *Agent) Run() {
 		task, err := a.getTask()
 		if err != nil {
 			if err.Error() != "no tasks available" {
-				slog.Error("Error getting task: ", err)
+				slog.Error("[AGENT]: Error getting task: ", err)
 			} else {
 				slog.Debug("No new tasks")
 			}

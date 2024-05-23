@@ -55,4 +55,4 @@ with gr.Blocks() as demo:
             get_id_butt = gr.Button("Get")
             get_id_butt.click(getById, inputs=inp_id, outputs=out_expressions_by_id)
 
-demo.launch()
+demo.launch(inbrowser=True)
