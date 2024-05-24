@@ -125,12 +125,15 @@ func (o *Orchestrator) expressionProcessing() {
 		}
 
 		var err error
-		select {
-		case <-time.After(time.Second * time.Duration(o.Config.TimeLimitSeconds)):
-			err = errors.New("time limit exceeded")
-		default:
-		BIG_LOOP:
-			for len(expr_ordered) != 1 {
+		timer := time.NewTimer(time.Second * time.Duration(o.Config.TimeLimitSeconds))
+	BIG_LOOP:
+		for len(expr_ordered) != 1 {
+			select {
+			case <-timer.C:
+				err = errors.New("time limit exceeded")
+				break BIG_LOOP
+			default:
+
 				//переберём всё
 				for i, v := range expr_ordered {
 					if i == 0 || i == len(expr_ordered)-1 {

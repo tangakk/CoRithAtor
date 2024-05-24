@@ -15,29 +15,24 @@ func ToPostfixNotation(expression string) ([]any, error) {
 	expression = strings.ReplaceAll(expression, " ", "") //убираем пробелы
 	rexp := []rune(expression)
 	//дальше одновременно идёт и проверка выражения на корректность, и его запись в постфикс. н.
-	brackets := 0            //скобки; ( - +1; ) - -1
-	negative := false        //для унарного минусы
-	point := false           //две точки не могут идти в одном числе, так?
-	integer := 0             //целая часть
-	fraction := 0            //дробная часть
-	stack := make([]any, 0)  //для конвертации
-	queue := make([]any, 0)  //для конвертации
-	for i, r := range rexp { //перебираем выражение
+	brackets := 0                    //скобки; ( - +1; ) - -1
+	point := false                   //две точки не могут идти в одном числе, так?
+	integer := 0                     //целая часть
+	fraction := 0                    //дробная часть
+	stack := make([]any, 0)          //для конвертации
+	queue := make([]any, 0)          //для конвертации
+	for i := 0; i < len(rexp); i++ { //перебираем выражение
+		r := rexp[i]
 		if i != 0 {
 			//тут проверяем, надо ли число кинуть в queue
 			if unicode.IsDigit(rexp[i-1]) && !unicode.IsDigit(r) && r != '.' {
-				minus := ""
-				if negative {
-					minus = "-"
-				}
-				s := minus + fmt.Sprint(integer) + "." + fmt.Sprint(fraction)
+				s := fmt.Sprint(integer) + "." + fmt.Sprint(fraction)
 				n, err := strconv.ParseFloat(s, 64) //переводим число в float64
 				if err != nil {
 					return nil, err
 				}
 				queue = append(queue, n)
 				point = false
-				negative = false
 				integer = 0
 				fraction = 0
 			}
@@ -57,11 +52,7 @@ func ToPostfixNotation(expression string) ([]any, error) {
 				integer += n
 			}
 			if i == len(rexp)-1 {
-				minus := ""
-				if negative {
-					minus = "-"
-				}
-				s := minus + fmt.Sprint(integer) + "." + fmt.Sprint(fraction)
+				s := fmt.Sprint(integer) + "." + fmt.Sprint(fraction)
 				n, err := strconv.ParseFloat(s, 64) //переводим число в float64
 				if err != nil {
 					return nil, err
@@ -93,7 +84,10 @@ func ToPostfixNotation(expression string) ([]any, error) {
 			stack = append(stack, string(r))
 		case r == '+' || r == '-': //операторы с низким приоритетом
 			if (i == 0 || rexp[i-1] == '(') && r == '-' {
-				negative = true
+				//унарный минус - просто добавим умножение на -1
+				queue = append(queue, float64(-1))
+				rexp = append(rexp[:i+1], append([]rune{'*'}, rexp[i+1:]...)...)
+				rexp[i] = ' ' //чтоб проверка на два знака не ругалась
 			} else if len(stack) == 0 {
 				stack = append(stack, string(r))
 			} else if stack[len(stack)-1] == "(" {
