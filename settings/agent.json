@@ -1,6 +1,5 @@
 {
-    "OrchestratorURI": "http://localhost:8080",
-    "TaskPath": "/internal/task",
+    "OrchestratorURI": "localhost:8081",
     "MaxWorkers": 1,
     "DelayMs": 500,
     "TimeAdditionMs": 100,

@@ -1,0 +1,24 @@
+syntax = "proto3";
+package internal_messages;
+option go_package = "github.com/tangakk/CoRithAtor/proto";
+
+service InternalService {
+    rpc TaskGet(TaskGetRequest) returns (TaskGetResponse);
+    rpc TaskPost(TaskPostRequest) returns (TaskPostResponse);
+}
+
+message TaskGetRequest {}
+
+message TaskGetResponse {
+    int32 id =1;
+    float arg1 = 2;
+    float arg2 = 3;
+    string operation = 4;
+}
+
+message TaskPostRequest {
+    int32 id = 1;
+    float result = 2;
+}
+
+message TaskPostResponse {}

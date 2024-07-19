@@ -1,19 +1,21 @@
 package agent
 
 import (
-	"bytes"
+	"context"
 	"corithator/internal/orchestrator"
-	"encoding/json"
-	"errors"
-	"io"
+	pb "corithator/proto"
+	"fmt"
+	"log"
 	"log/slog"
-	"net/http"
+	"os"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type AgentConfig struct {
-	OrchestratorURI      string //если пустой - меняется в :8080
-	TaskPath             string //по умолчанию - /internal/task
+	OrchestratorURI      string //если пустой - меняется в :8081
 	MaxWorkers           int    //минимум 1
 	DelayMs              int    //задержка между запросами задач
 	TimeAdditionMs       int
@@ -23,16 +25,14 @@ type AgentConfig struct {
 }
 
 type Agent struct {
-	Config AgentConfig
-	tasks  chan orchestrator.Task
+	Config     AgentConfig
+	tasks      chan orchestrator.Task
+	grpcClient pb.InternalServiceClient
 }
 
 func NewAgent(config AgentConfig) *Agent {
 	if config.OrchestratorURI == "" {
-		config.OrchestratorURI = "http://localhost:8080"
-	}
-	if config.TaskPath == "" {
-		config.TaskPath = "/internal/task"
+		config.OrchestratorURI = "localhost:8081"
 	}
 	if config.DelayMs < 0 {
 		config.DelayMs = 0
@@ -77,11 +77,25 @@ func (a *Agent) Run() {
 			}
 		}()
 	}
+
+	addr := a.Config.OrchestratorURI
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	if err != nil {
+		log.Println("could not connect to grpc server: ", err)
+		os.Exit(1)
+	}
+
+	defer conn.Close()
+
+	a.grpcClient = pb.NewInternalServiceClient(conn)
+
 	for {
 		task, err := a.getTask()
 		if err != nil {
-			if err.Error() != "no tasks available" {
-				slog.Error("[AGENT]: Error getting task: ", err)
+			if err.Error() != "rpc error: code = Unknown desc = no tasks available" {
+				slog.Error(fmt.Sprint("[AGENT]: Error getting task: ", err))
 			} else {
 				slog.Debug("No new tasks")
 			}
@@ -93,28 +107,18 @@ func (a *Agent) Run() {
 }
 
 func (a *Agent) sendResult(id int, result float64) {
-	data := orchestrator.TaskPostRequest{Id: id, Result: result}
-	jsonValue, _ := json.Marshal(data)
-	http.Post(a.Config.OrchestratorURI+a.Config.TaskPath, "application/json",
-		bytes.NewBuffer(jsonValue))
+	a.grpcClient.TaskPost(context.TODO(),
+		&pb.TaskPostRequest{Id: int32(id), Result: float32(result)})
 }
 
 func (a *Agent) getTask() (orchestrator.Task, error) {
-	resp, err := http.Get(a.Config.OrchestratorURI + a.Config.TaskPath)
+	data, err := a.grpcClient.TaskGet(context.TODO(), &pb.TaskGetRequest{})
 	if err != nil {
 		return orchestrator.Task{}, err
 	}
-
-	if resp.StatusCode != 200 {
-		return orchestrator.Task{}, errors.New("no tasks available")
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return orchestrator.Task{}, err
-	}
-
-	var t orchestrator.TaskGetResponse
-	json.Unmarshal(body, &t)
-	return t.Task, nil
+	task := orchestrator.Task{Arg1: float64(data.Arg1),
+		Arg2:      float64(data.Arg2),
+		Id:        int(data.Id),
+		Operation: data.Operation}
+	return task, nil
 }

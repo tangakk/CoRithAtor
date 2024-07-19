@@ -1,22 +1,30 @@
 package orchestrator
 
 import (
+	"context"
 	postfixnotation "corithator/pkg/postfix_notation"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
 
+	pb "corithator/proto"
+
 	"github.com/dustinxie/lockfree"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"google.golang.org/grpc"
 )
 
 type OrchestratorConfig struct {
 	Port             int //если невалидный - меняется в 8080 при старте
+	GRPC_Port        int //порт грпц, если невалидный - меняется в 8081
 	TimeLimitSeconds int //по умолчанию - 60 секунд
 }
 
@@ -27,6 +35,7 @@ type Orchestrator struct {
 	agent_responses lockfree.Queue     //ответы агента
 	tasks_to_give   lockfree.Queue     //задачи, чтобы дать агенту
 	counter         int32              //считать айди
+	pb.InternalServiceServer
 }
 
 type expression struct {
@@ -39,6 +48,9 @@ type expression struct {
 func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 	if config.Port <= 0 {
 		config.Port = 8080
+	}
+	if config.GRPC_Port <= 0 {
+		config.GRPC_Port = 8081
 	}
 	if config.TimeLimitSeconds <= 0 {
 		config.TimeLimitSeconds = 60
@@ -68,18 +80,34 @@ func (o *Orchestrator) Run() {
 		r.Get("/expressions/:{id}", o.getExpression)
 	})
 
-	//внутренние методы
-	r.Route("/internal", func(r chi.Router) {
-		r.Get("/task", o.getTask)
-		r.Post("/task", o.postTaskResult)
-	})
-
 	//методы для посмтреть-потыкать
 	r.Route("/foo", func(r chi.Router) {
 		r.Get("/tasks", o.watchTasks)
 	})
 
-	http.ListenAndServe(":"+port_str, r)
+	go http.ListenAndServe(":"+port_str, r)
+
+	//внутренние методы через gRPC
+
+	host := "localhost"
+
+	addr := fmt.Sprintf("%v:%v", host, o.Config.GRPC_Port)
+	lis, err := net.Listen("tcp", addr)
+
+	if err != nil {
+		log.Println("error starting tcp listener: ", err)
+		os.Exit(1)
+	}
+
+	log.Println("tcp listener started at port: ", o.Config.GRPC_Port)
+	grpcServer := grpc.NewServer()
+
+	pb.RegisterInternalServiceServer(grpcServer, o)
+
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Println("error serving grpc: ", err)
+		os.Exit(1)
+	}
 }
 
 // Определяет, как распараллелить выражение
@@ -161,12 +189,12 @@ func (o *Orchestrator) expressionProcessing() {
 						//если не считается ещё
 						if !task_already_started {
 							tasks[cnt] = v.pos
-							o.tasks_to_give.Enque(TaskGetResponse{Task: Task{
+							o.tasks_to_give.Enque(Task{
 								Id:        cnt,
 								Arg1:      arg1,
 								Arg2:      arg2,
 								Operation: oper,
-							}})
+							})
 							cnt++
 						}
 					}
@@ -174,7 +202,7 @@ func (o *Orchestrator) expressionProcessing() {
 				//перебрали, ура. Проверим, есть ли чё посчитанное агентом
 				t = o.agent_responses.Deque()
 				for t != nil {
-					task_res := t.(TaskPostRequest)
+					task_res := t.(TaskResult)
 					pos, ok := tasks[task_res.Id]
 					if !ok {
 						continue
@@ -267,32 +295,34 @@ func (o *Orchestrator) getExpression(w http.ResponseWriter, r *http.Request) {
 }
 
 // выдача задач для агента
-func (o *Orchestrator) getTask(w http.ResponseWriter, r *http.Request) {
+func (o *Orchestrator) TaskGet(ctx context.Context,
+	in *pb.TaskGetRequest,
+) (*pb.TaskGetResponse, error) {
 	if o.tasks_to_give.Len() == 0 {
-		w.WriteHeader(http.StatusNotFound)
-		return
+		return nil, errors.New("no tasks available")
 	}
-	task := o.tasks_to_give.Deque().(TaskGetResponse)
-	w.Header().Add("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(task)
+	task := o.tasks_to_give.Deque().(Task)
+	res := &pb.TaskGetResponse{Id: int32(task.Id),
+		Arg1:      float32(task.Arg1),
+		Arg2:      float32(task.Arg2),
+		Operation: task.Operation}
+	return res, nil
 }
 
 // получение ответа от агента
-func (o *Orchestrator) postTaskResult(w http.ResponseWriter, r *http.Request) {
-	var taskPostReq TaskPostRequest
-	err := json.NewDecoder(r.Body).Decode(&taskPostReq)
-	if err != nil {
-		http.Error(w, "invalid data", http.StatusUnprocessableEntity)
-	}
-	o.agent_responses.Enque(taskPostReq)
-	w.WriteHeader(200)
+func (o *Orchestrator) TaskPost(ctx context.Context,
+	in *pb.TaskPostRequest,
+) (*pb.TaskPostResponse, error) {
+	var taskRes = TaskResult{Id: int(in.Id), Result: float64(in.Result)}
+	o.agent_responses.Enque(taskRes)
+	return &pb.TaskPostResponse{}, nil
 }
 
 type CalculateRequest struct {
 	Expression string `json:"expression"`
 }
 
-type TaskPostRequest struct {
+type TaskResult struct {
 	Id     int     `json:"id"`
 	Result float64 `json:"result"`
 }
