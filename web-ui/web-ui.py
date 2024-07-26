@@ -2,19 +2,23 @@ import gradio as gr
 import requests
 import time
 
+jwt = ""
+
 def calculate(expression):
     data = {"expression": expression}
-    r = requests.post("http://localhost:8080/api/calculate", json=data)
+    headers = {"Jwt":jwt}
+    r = requests.post("http://localhost:8080/api/calculate", json=data, headers=headers)
+    print(r.request.headers)
     if r.status_code!=201:
         return r.text
     id = r.json()["id"]
-    r = requests.get(f"http://localhost:8080/api/expressions/:{id}")
+    r = requests.get(f"http://localhost:8080/api/expressions/:{id}", headers=headers)
     if r.status_code!=200:
         return r.text
     r_json = r.json()["expression"]
     while r_json["status"] == "In queue" or r_json["status"] == "Processing":
         time.sleep(1)
-        r = requests.get(f"http://localhost:8080/api/expressions/:{id}")
+        r = requests.get(f"http://localhost:8080/api/expressions/:{id}", headers=headers)
         if r.status_code!=200:
             return r.text
         r_json = r.json()["expression"]
@@ -23,7 +27,8 @@ def calculate(expression):
     return r_json["status"]
 
 def getResults():
-    r = requests.get("http://localhost:8080/api/expressions")
+    headers = {"Jwt":jwt}
+    r = requests.get("http://localhost:8080/api/expressions", headers=headers)
     if r.status_code!=200:
         return r.text
     expressions = list(r.json()["expressions"])
@@ -31,10 +36,28 @@ def getResults():
     return expressions
 
 def getById(id):
-    r = requests.get(f"http://localhost:8080/api/expressions/:{id}")
+    headers = {"Jwt":jwt}
+    r = requests.get(f"http://localhost:8080/api/expressions/:{id}",headers = headers)
     if r.status_code!=200:
         return r.text
     return r.json()
+
+def register(login, password):
+    data = {"login": login, "password": password}
+    r = requests.post("http://localhost:8080/user/register", json=data)
+    if r.status_code!=200:
+        return r.text
+    return r.json()
+
+def login(login, password):
+    global jwt
+    data = {"login": login, "password": password}
+    r = requests.get("http://localhost:8080/user/login", json=data)
+    if r.status_code!=200:
+        return r.text
+    jwt = r.json()["JWT"]
+    print(jwt)
+    return "Succesfull login"
 
 
 with gr.Blocks() as demo:
@@ -54,5 +77,15 @@ with gr.Blocks() as demo:
             out_expressions_by_id = gr.Textbox(label="Output")
             get_id_butt = gr.Button("Get")
             get_id_butt.click(getById, inputs=inp_id, outputs=out_expressions_by_id)
+    with gr.Row():
+        with gr.Column():
+            login_ = gr.Textbox(placeholder="login", label="Login")
+            password = gr.Textbox(placeholder="password", label="Password")
+            res = gr.Textbox(label="Results")
+            with gr.Row():
+                reg_butt = gr.Button("Register")
+                login_butt = gr.Button("Login")
+            reg_butt.click(register, inputs=[login_, password], outputs=res)
+            login_butt.click(login, inputs=[login_, password], outputs=res)
 
 demo.launch(inbrowser=True)

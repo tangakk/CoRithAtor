@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"corithator/internal/sql"
 	postfixnotation "corithator/pkg/postfix_notation"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -19,13 +21,16 @@ import (
 	"github.com/dustinxie/lockfree"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc"
 )
 
 type OrchestratorConfig struct {
-	Port             int //если невалидный - меняется в 8080 при старте
-	GRPC_Port        int //порт грпц, если невалидный - меняется в 8081
-	TimeLimitSeconds int //по умолчанию - 60 секунд
+	Port             int    //если невалидный - меняется в 8080 при старте
+	GRPC_Port        int    //порт грпц, если невалидный - меняется в 8081
+	TimeLimitSeconds int    //по умолчанию - 60 секунд
+	SecretKey        string //для JWT
+	LoginTime        int    //время протухания JWT в минутах
 }
 
 type Orchestrator struct {
@@ -43,6 +48,7 @@ type expression struct {
 	expression []any   //выражение
 	status     string  //статус
 	result     float64 //результат
+	user       string  //пользователь с выражением
 }
 
 func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
@@ -66,6 +72,8 @@ func NewOrchestrator(config OrchestratorConfig) *Orchestrator {
 
 // запускает оркестратор
 func (o *Orchestrator) Run() {
+	sql.Init()
+	defer sql.Close()
 	r := chi.NewRouter()
 	port_str := fmt.Sprint(o.Config.Port)
 	r.Use(middleware.Logger)
@@ -73,11 +81,28 @@ func (o *Orchestrator) Run() {
 
 	go o.expressionProcessing()
 
+	//собираем с бд всё неподсчитанное
+	all_expr, err := sql.GetNotCountedExpressions()
+	if err != nil {
+		panic(err)
+	}
+	for _, e := range all_expr {
+		tmp := expression{id: int32(e.Id), expression: arrayFromSqlToPfn(e.Expression)}
+		o.expressions.Enque(tmp)
+	}
+
 	//все методы для API
 	r.Route("/api", func(r chi.Router) {
+		r.Use(o.loginMiddleware)
 		r.Post("/calculate", o.addExpression)
 		r.Get("/expressions", o.getExpressions)
 		r.Get("/expressions/:{id}", o.getExpression)
+	})
+
+	//методы для регистрации/входа
+	r.Route("/user", func(r chi.Router) {
+		r.Post("/register", o.registerUser)
+		r.Get("/login", o.loginUser)
 	})
 
 	//методы для посмтреть-потыкать
@@ -125,7 +150,6 @@ func (o *Orchestrator) expressionProcessing() {
 		expr := t.(expression)
 		changed := expr
 		changed.status = "Processing"
-		o.results.Set(expr.id, changed)
 
 		tasks := make(map[int]int) //ключ - айди задачи, значение - место в выражении
 
@@ -228,7 +252,7 @@ func (o *Orchestrator) expressionProcessing() {
 		} else {
 			changed.status = err.Error()
 		}
-		o.results.Set(changed.id, changed)
+		sql.WriteResult(int(changed.id), changed.result, changed.status)
 	}
 }
 
@@ -245,8 +269,13 @@ func (o *Orchestrator) addExpression(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	id, err := sql.AddExpression(fmt.Sprint(pfn), r.Context().Value("login").(string))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	tmp := expression{
-		id:         o.counter,
+		id:         int32(id),
 		expression: pfn,
 		status:     "In queue",
 		result:     0,
@@ -262,18 +291,21 @@ func (o *Orchestrator) addExpression(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Orchestrator) getExpressions(w http.ResponseWriter, r *http.Request) {
-	expressions := ExpressionGetResponse{Expressions: make([]ExpressionResp, o.results.Len())}
-	o.results.Lock()
-	cnt := 0
-	for _, v, ok := o.results.Next(); ok; _, v, ok = o.results.Next() {
-		//fmt.Println(o.results.Get(k))
-		v_exp := v.(expression)
-		expressions.Expressions[cnt] = ExpressionResp{v_exp.id, v_exp.status, v_exp.result}
-		cnt++
+	res := ExpressionGetResponse{Expressions: make([]ExpressionResp, 0)}
+	expressions, err := sql.GetExpressions(r.Context().Value("login").(string))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	o.results.Unlock()
+	for _, v := range expressions {
+		res.Expressions = append(res.Expressions, ExpressionResp{
+			Id:     int32(v.Id),
+			Status: v.Status,
+			Result: v.Result,
+		})
+	}
 	w.Header().Add("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(expressions)
+	json.NewEncoder(w).Encode(res)
 }
 
 func (o *Orchestrator) getExpression(w http.ResponseWriter, r *http.Request) {
@@ -282,14 +314,17 @@ func (o *Orchestrator) getExpression(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	data, ok := o.results.Get(int32(id))
-	if !ok {
-		http.Error(w, "no expression with such id found: "+chi.URLParam(r, "id"), http.StatusNotFound)
+	data_expr, err := sql.GetExpressionById(r.Context().Value("login").(string), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		fmt.Println(err)
 		return
 	}
-	data_expr := data.(expression)
 
-	res := map[string]ExpressionResp{"expression": {data_expr.id, data_expr.status, data_expr.result}}
+	res := map[string]ExpressionResp{"expression": {
+		int32(data_expr.Id),
+		data_expr.Status,
+		data_expr.Result}}
 	w.Header().Add("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
 }
@@ -306,6 +341,7 @@ func (o *Orchestrator) TaskGet(ctx context.Context,
 		Arg1:      float32(task.Arg1),
 		Arg2:      float32(task.Arg2),
 		Operation: task.Operation}
+	fmt.Println(res)
 	return res, nil
 }
 
@@ -316,6 +352,91 @@ func (o *Orchestrator) TaskPost(ctx context.Context,
 	var taskRes = TaskResult{Id: int(in.Id), Result: float64(in.Result)}
 	o.agent_responses.Enque(taskRes)
 	return &pb.TaskPostResponse{}, nil
+}
+
+// регистрация пользователя
+func (o *Orchestrator) registerUser(w http.ResponseWriter, r *http.Request) {
+	var user UserRequest
+	err := json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	err = sql.RegisterUser(user.Login, user.Password)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+
+	res := map[string]string{"res": "ok"}
+	w.Header().Add("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
+func (o *Orchestrator) loginUser(w http.ResponseWriter, r *http.Request) {
+	var user UserRequest
+	err := json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	ok, err := sql.PasswordIsCorrect(user.Login, user.Password)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if !ok {
+		http.Error(w, "wrong password", http.StatusForbidden)
+		return
+	}
+
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"login": user.Login,
+		"nbf":   now.Unix(),
+		"exp":   now.Add(time.Duration(o.Config.LoginTime) * time.Minute).Unix(),
+		"iat":   now.Unix(),
+	})
+	tokenString, err := token.SignedString([]byte(o.Config.SecretKey))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+
+	res := map[string]string{"JWT": tokenString}
+	w.Header().Add("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
+func (o *Orchestrator) loginMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenString := r.Header.Get("JWT")
+		if tokenString == "" {
+			http.Error(w, "bad JWT", http.StatusBadRequest)
+			return
+		}
+
+		tokenFromString, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			return []byte(o.Config.SecretKey), nil
+		})
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		claims := tokenFromString.Claims.(jwt.MapClaims)
+		login := claims["login"].(string)
+
+		if ok, _ := sql.IsUserExists(login); !ok {
+			http.Error(w, "user does not exist", http.StatusBadRequest)
+			return
+		}
+
+		newr := r.WithContext(context.WithValue(r.Context(), "login", login))
+		next.ServeHTTP(w, newr)
+
+	})
 }
 
 type CalculateRequest struct {
@@ -348,6 +469,11 @@ type ExpressionResp struct {
 	Result float64 `json:"result"`
 }
 
+type UserRequest struct {
+	Login    string `json:"login"`
+	Password string `json:"password"`
+}
+
 // удалить из слайса
 func remove[T any](slice []T, s int) []T {
 	return append(slice[:s], slice[s+1:]...)
@@ -362,4 +488,19 @@ func (o *Orchestrator) watchTasks(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(fmt.Sprint(task.Id, task.Arg1, task.Operation, task.Arg2, "\n")))
 		o.tasks_to_give.Enque(t.(TaskGetResponse))
 	}
+}
+
+// конвертируем строчку в массив
+func arrayFromSqlToPfn(str string) []any {
+	str = str[1 : len(str)-1]
+	str_arr := strings.Split(str, " ")
+	arr := make([]any, len(str_arr))
+	for i, v := range str_arr {
+		if n, err := strconv.ParseFloat(v, 64); err != nil {
+			arr[i] = v
+		} else {
+			arr[i] = n
+		}
+	}
+	return arr
 }

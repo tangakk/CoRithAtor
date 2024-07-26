@@ -11,6 +11,8 @@ require (
 
 require (
 	github.com/dchest/siphash v1.2.2 // indirect
+	github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sys v0.20.0 // indirect
 	golang.org/x/text v0.15.0 // indirect

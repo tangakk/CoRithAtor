@@ -1,5 +1,7 @@
 {
     "Port": 8080,
     "GRPC_Port": 8081,
-    "TimeLimitSeconds": 60
+    "TimeLimitSeconds": 60,
+    "SecretKey": "You're Going to Love Tomorrow's Story.",
+    "LoginTime": 5
 }
