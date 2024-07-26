@@ -127,43 +127,7 @@ curl --location 'localhost:8080/api/expressions/:1'
 {"expression":{"id":1,"status":"Ready","result":15.280000000000001}}
 ```
 ## Внутренние методы
-Методы, используемы агентом для общения с оркестратором, находятся по адресу {orhcestrator_uri}/internal/
-### task (GET)
-Возвращает задачу для агента.
-```
-curl --location 'localhost:8080/internal/task'
-```
-Коды ответа:
-- 200 - есть задача
-- 404 - задач нет
-
-<!-- -->
-
-Пример ответа:
-```
-{
-       "task":
-             {
-                   "id": 1,
-                   "arg1": 3,
-                   "arg2": 2,
-                   "operation": "+"
-              }
-}
-```
-### task (POST)
-Используется для записи ответа на задачу.
-```
-curl --location 'localhost:8080/internal/task' \
---header 'Content-Type: application/json' \
---data '{
-      "id": 1,
-      "result": 2.5
-}'
-```
-Коды ответа:
-- 200 - ответ принят
-- 422 - невалидные данные
+Агент и оркестратор общаются друг с другом через gRPC. Можете просмотреть [proto файл](proto/internal.proto), тут описания не будет
 
 <!-- -->
 
