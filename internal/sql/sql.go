@@ -3,9 +3,9 @@ package sql
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var main_db *sql.DB
@@ -90,7 +90,11 @@ func RegisterUser(login string, password string) error {
 	}
 	rows.Close()
 	q = "INSERT INTO users (login, password) VALUES ($1, $2)"
-	_, err = main_db.Exec(q, login, password)
+	hash_password, err := generate(password)
+	if err != nil {
+		return err
+	}
+	_, err = main_db.Exec(q, login, hash_password)
 	if err != nil {
 		return err
 	}
@@ -107,12 +111,10 @@ func PasswordIsCorrect(login string, password string) (bool, error) {
 	defer rows.Close()
 	rows.Next()
 	err = rows.Scan(&real_password)
-	fmt.Println(err, real_password, "HELLO")
 	if err != nil {
 		return false, err
 	}
-	fmt.Println(real_password, password)
-	return password == real_password, nil
+	return compare(real_password, password) == nil, nil
 }
 
 func IsUserExists(login string) (bool, error) {
@@ -212,4 +214,21 @@ func WriteResult(id int, result float64, status string) error {
 		return err
 	}
 	return nil
+}
+
+func generate(s string) (string, error) {
+	saltedBytes := []byte(s)
+	hashedBytes, err := bcrypt.GenerateFromPassword(saltedBytes, bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+
+	hash := string(hashedBytes[:])
+	return hash, nil
+}
+
+func compare(hash string, s string) error {
+	incoming := []byte(s)
+	existing := []byte(hash)
+	return bcrypt.CompareHashAndPassword(existing, incoming)
 }
